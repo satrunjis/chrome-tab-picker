@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Chromium Tab Picker",
+  "version": "0.3.1",
+  "description": "Local fuzzy tab picker: an overlay, never a new browser window.",
+  "minimum_chrome_version": "127",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage",
+    "favicon"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Tab Picker",
+    "default_popup": "picker.html"
+  },
+  "commands": {
+    "open-picker": {
+      "suggested_key": {
+        "default": "Alt+Q"
+      },
+      "description": "Open tab picker over the current page"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "picker.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "use_dynamic_url": true
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; img-src 'self'; base-uri 'none'"
+  }
+}

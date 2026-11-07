@@ -1,0 +1,23 @@
+:root { color-scheme: dark; font: 14px/1.4 system-ui, sans-serif; color: #eee; }
+* { box-sizing: border-box; }
+html { height: 100%; background: transparent; }
+body { margin: 0; height: 100%; display: flex; justify-content: center; align-items: flex-start; padding: clamp(16px, 14vh, 120px) 16px 16px; background: #0004; }
+#picker { width: min(760px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #363636; border-radius: 0; background: #181818; box-shadow: 0 8px 28px #0005; }
+header { flex-shrink: 0; padding: 8px 20px; border-bottom: 1px solid #303030; }
+input { display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; outline: none; background: transparent; color: #eee; caret-color: #ccc; font: inherit; font-size: 15px; }
+#results { overflow-y: auto; min-height: 0; max-height: 600px; overscroll-behavior: contain; scrollbar-width: none; }
+#results::-webkit-scrollbar { display: none; }
+.result { display: flex; align-items: center; gap: 12px; height: 60px; padding: 7px 20px; cursor: pointer; }
+.result[aria-selected="true"] { background: #222; }
+.result img { width: 16px; height: 16px; flex: 0 0 16px; filter: brightness(var(--recency, 1)); }
+.text { flex: 1; min-width: 0; }
+.title, .domain { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.title { color: var(--primary); font-size: 17px; font-weight: 450; }
+.domain { color: var(--secondary); font-size: 12px; margin-top: 2px; }
+.recency { flex-shrink: 0; color: var(--secondary); font-size: 11px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+mark { color: inherit; background: transparent; font-weight: 750; }
+#status { flex-shrink: 0; padding: 20px; margin: 0; color: #aaa; }
+#status:empty { display: none; }
+body.popup { width: 760px; height: auto; max-height: 600px; padding: 0; background: #181818; }
+.popup #picker { width: 100%; border: 0; border-radius: 0; box-shadow: none; max-height: 600px; }
+@media (max-width: 480px) { body:not(.popup) { padding: 8px; } header { padding-inline: 14px; } .result { padding-inline: 14px; gap: 10px; } }

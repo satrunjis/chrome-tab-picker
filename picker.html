@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Chromium Tab Picker</title>
+  <link rel="stylesheet" href="picker.css">
+  <script type="module" src="picker.js"></script>
+</head>
+<body>
+  <main id="picker" role="dialog" aria-label="Поиск вкладки" aria-modal="true">
+    <header><input id="query" type="text" autocomplete="off" spellcheck="false" aria-label="Поиск вкладок" role="combobox" aria-controls="results" aria-expanded="true" aria-autocomplete="list"></header>
+    <div id="results" role="listbox" aria-label="Открытые вкладки"></div>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>
