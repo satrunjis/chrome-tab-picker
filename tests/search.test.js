@@ -33,3 +33,43 @@ test('equal relevance uses MRU, then stable ID/position ordering', () => {
   const tabs = [tab(3, 'Same', 'https://example.org', 1), tab(1, 'Same', 'https://example.org', 1), tab(2, 'Same', 'https://example.org', 5)];
   assert.deepEqual(rankTabs(tabs, 'same').map(t => t.id), [2, 1, 3]);
 });
+test('the same domain match uses MRU rather than favoring short Settings URLs', () => {
+  const tabs = [
+    tab(1, 'Settings', 'https://chatgpt.com/#settings', null),
+    tab(2, 'Settings', 'https://chatgpt.com/settings', null),
+    tab(3, 'Редакторы Markdown Neovim', 'https://chatgpt.com/c/6aef080d-7680-83ed-9613-24da63b8d476', 100),
+    tab(4, 'Настройка редактора', 'https://chatgpt.com/c/another-long-conversation-identifier', 50)
+  ];
+  const results = rankTabs(tabs, 'chat');
+  assert.deepEqual(results.map(tab => tab.id), [3, 4, 1, 2]);
+  assert.ok(results.every(tab => tab.score === results[0].score));
+});
+
+test('literal ChatGPT domain outranks scattered chat letters in GitHub titles', () => {
+  const tabs = [
+    tab(1, 'markdown-table-mode.nvim/Screenshot.gif at main · Kicamon/markdown-table-mode.nvim',
+      'https://github.com/Kicamon/markdown-table-mode.nvim/blob/main/Screenshot.gif', null),
+    tab(2, 'Kicamon/markdown-table-mode.nvim: A lightweight markdown format plugin like...',
+      'https://github.com/Kicamon/markdown-table-mode.nvim', 200),
+    tab(3, 'Редакторы Markdown Neovim', 'https://chatgpt.com/c/6aef080d-7680-83ed-9613-24da63b8d476', 100)
+  ];
+  assert.equal(rankTabs(tabs, 'chat')[0].id, 3);
+});
+
+test('contiguous URL matches beat scattered title matches even with a large title bonus', () => {
+  const tabs = [
+    tab(1, 'c h a t', 'https://example.org/', 100),
+    tab(2, 'Нужный разговор', 'https://chatgpt.com/c/id', 1),
+    tab(3, 'Chat notes', 'https://example.org/', 0)
+  ];
+  assert.deepEqual(rankTabs(tabs, 'chat').map(tab => tab.id), [3, 2, 1]);
+});
+
+test('multi-token search prefers more contiguous tokens and still accepts fuzzy abbreviations', () => {
+  const tabs = [
+    tab(1, 'c h a t Review', 'https://example.org/', 100),
+    tab(2, 'Review', 'https://chatgpt.com/c/id', 1)
+  ];
+  assert.deepEqual(rankTabs(tabs, 'chat review').map(tab => tab.id), [2, 1]);
+  assert.equal(rankTabs([tab(3, 'GitHub Pull Requests')], 'ghpr')[0].id, 3);
+});

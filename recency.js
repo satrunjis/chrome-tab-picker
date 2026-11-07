@@ -36,3 +36,21 @@ export function domainLabel(url) {
     return parsed.hostname || (parsed.protocol === 'file:' ? 'Локальный файл' : parsed.protocol.replace(':', ''));
   } catch { return 'Без адреса'; }
 }
+
+// Map actual URL match offsets onto the displayed hostname, never onto its path
+// or credentials. Both offsets and the renderer use UTF-16 string positions.
+export function domainMatchPositions(url, positions) {
+  const result = new Set();
+  if (!positions.size) return result;
+  try {
+    const hostname = new URL(url).hostname;
+    const authority = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(url);
+    if (!hostname || !authority) return result;
+    const start = authority[0].length - authority[1].length + authority[1].lastIndexOf('@') + 1;
+    if (url.slice(start, start + hostname.length).toLowerCase() !== hostname.toLowerCase()) return result;
+    for (const position of positions) {
+      if (position >= start && position < start + hostname.length) result.add(position - start);
+    }
+  } catch { /* Synthetic labels have no URL character positions. */ }
+  return result;
+}

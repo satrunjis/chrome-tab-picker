@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { withRecency, relativeTime, domainLabel } from '../recency.js';
+import { withRecency, relativeTime, domainLabel, domainMatchPositions } from '../recency.js';
 import { rankTabs } from '../search.js';
 
 const tab = (id, lastUsed, title = 'ChatGPT') => ({ id, lastUsed, title, url: 'https://chatgpt.com/c/private-path', windowId: 1, index: id });
@@ -38,4 +38,17 @@ test('display domains never reveal URL paths or query strings', () => {
   assert.equal(domainLabel('chrome://settings/privacy'), 'settings');
   assert.equal(domainLabel('file:///private/document.pdf'), 'Локальный файл');
   assert.equal(domainLabel('about:blank'), 'about');
+});
+
+test('domain highlights map only matched hostname characters, excluding credentials and paths', () => {
+  for (const url of ['https://chatgpt.com/c/chat', 'https://chatgpt.com@CHATGPT.com:443/c/chat']) {
+    const allPositions = new Set(Array.from({ length: url.length }, (_, i) => i));
+    assert.deepEqual([...domainMatchPositions(url, allPositions)], Array.from({ length: 11 }, (_, i) => i));
+    const start = url.lastIndexOf('/chat') + 1;
+    assert.equal(domainMatchPositions(url, new Set([start, start + 1])).size, 0);
+  }
+  const url = 'https://chatgpt.com/c/id';
+  assert.deepEqual([...domainMatchPositions(url, new Set([8, 9, 10, 11]))], [0, 1, 2, 3]);
+  assert.equal(domainMatchPositions('file:///private/path', new Set([8])).size, 0);
+  assert.equal(domainMatchPositions('invalid URL', new Set([0])).size, 0);
 });

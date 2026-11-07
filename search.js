@@ -35,22 +35,36 @@ export function fuzzyMatch(text, query) {
     if (!previous.size) return null;
   }
   const winner = [...previous.values()].sort((a, b) => b.score - a.score)[0];
-  return { ...winner, score: winner.score - chars.length * 0.01 };
+  // Unmatched suffixes do not change match quality. In particular, the same
+  // domain prefix must tie across URLs so MRU, not URL length, breaks the tie.
+  return winner;
 }
 
 export function rankTabs(tabs, query) {
-  const tokens = query.trim().split(/\s+/u).filter(Boolean);
+  const tokens = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+    .map(text => ({ text, titleBonus: 24 + Array.from(text).length * 8 }));
   return tabs.flatMap(tab => {
-    let score = 0;
+    let score = 0, contiguousTokens = 0;
+    const titleText = tokens.length ? tab.title.toLocaleLowerCase() : '';
+    const urlText = tokens.length ? tab.url.toLocaleLowerCase() : '';
     const titlePositions = new Set(), urlPositions = new Set();
     for (const token of tokens) {
-      const title = fuzzyMatch(tab.title, token);
-      const url = fuzzyMatch(tab.url, token);
+      const title = fuzzyMatch(tab.title, token.text);
+      const url = fuzzyMatch(tab.url, token.text);
       if (!title && !url) return [];
-      score += Math.max(title ? title.score + 24 + Array.from(token).length * 8 : -Infinity, url?.score ?? -Infinity);
+      const titleContiguous = !!title && titleText.includes(token.text);
+      const urlContiguous = !!url && urlText.includes(token.text);
+      const contiguous = titleContiguous || urlContiguous;
+      if (contiguous) contiguousTokens++;
+      // Match quality comes before field preference: a literal domain must beat
+      // scattered letters in a title. Within that quality, prefer the title.
+      score += Math.max(
+        title && (!contiguous || titleContiguous) ? title.score + token.titleBonus : -Infinity,
+        url && (!contiguous || urlContiguous) ? url.score : -Infinity
+      );
       title?.positions.forEach(i => titlePositions.add(i));
       url?.positions.forEach(i => urlPositions.add(i));
     }
-    return [{ ...tab, score, titlePositions, urlPositions }];
-  }).sort((a, b) => b.score - a.score || compareRecency(a, b));
+    return [{ ...tab, score, contiguousTokens, titlePositions, urlPositions }];
+  }).sort((a, b) => b.contiguousTokens - a.contiguousTokens || b.score - a.score || compareRecency(a, b));
 }

@@ -3,9 +3,21 @@ const locks = new Set();
 let mru = {};
 const ready = chrome.storage.session.get('mru').then(data => { mru = data.mru || {}; });
 let clock = Date.now();
-let saveQueue = Promise.resolve();
+let savingMRU = false, mruDirty = false;
+let bulkDepth = 0;
 function persistMRU() {
-  saveQueue = saveQueue.then(() => chrome.storage.session.set({ mru: { ...mru } })).catch(console.error);
+  mruDirty = true;
+  if (bulkDepth || savingMRU) return;
+  savingMRU = true;
+  void Promise.resolve().then(async () => {
+    try {
+      while (mruDirty && !bulkDepth) {
+        mruDirty = false;
+        await chrome.storage.session.set({ mru: { ...mru } });
+      }
+    } catch (error) { console.error(error); }
+    finally { savingMRU = false; }
+  });
 }
 async function touch(id) {
   await ready;
@@ -15,8 +27,8 @@ async function touch(id) {
   broadcast();
 }
 async function snapshot() {
-  await ready;
-  return (await chrome.tabs.query({})).map(tab => ({
+  const [, tabs] = await Promise.all([ready, chrome.tabs.query({})]);
+  return tabs.map(tab => ({
     id: tab.id, windowId: tab.windowId, index: tab.index,
     title: tab.title || tab.pendingUrl || tab.url || 'Untitled',
     url: tab.url || tab.pendingUrl || '',
@@ -28,17 +40,56 @@ async function hostMessage(client, type, restore = true) {
   if (client.tabId === undefined) return;
   await chrome.tabs.sendMessage(client.tabId, { type, token: client.token, restore }, { frameId: 0 }).catch(() => {});
 }
-let broadcastTimer;
+let broadcastTimer, broadcastRevision = 0;
+function publish(tabs, acknowledgedClient) {
+  for (const client of clients) {
+    try { client.port.postMessage({ type: client === acknowledgedClient ? 'kept' : 'tabs', tabs }); }
+    catch { clients.delete(client); }
+  }
+}
 function broadcast() {
-  clearTimeout(broadcastTimer);
+  broadcastRevision++;
+  if (bulkDepth || !clients.size || broadcastTimer !== undefined) return;
   broadcastTimer = setTimeout(async () => {
+    broadcastTimer = undefined;
+    if (bulkDepth || !clients.size) return;
+    const version = broadcastRevision;
     try {
       const tabs = await snapshot();
-      for (const client of clients) {
-        try { client.port.postMessage({ type: 'tabs', tabs }); } catch { clients.delete(client); }
-      }
+      if (!bulkDepth && version === broadcastRevision) publish(tabs);
     } catch (error) { console.error(error); }
   }, 40);
+}
+const removedOverlayKeys = new Set();
+let removingOverlays = false;
+function removeOverlay(id) {
+  if (Number.isInteger(id)) removedOverlayKeys.add(`overlay:${id}`);
+  if (bulkDepth || removingOverlays || !removedOverlayKeys.size) return;
+  removingOverlays = true;
+  void Promise.resolve().then(async () => {
+    try {
+      while (removedOverlayKeys.size) {
+        const keys = [...removedOverlayKeys]; removedOverlayKeys.clear();
+        await chrome.storage.session.remove(keys);
+      }
+    } catch (error) { console.error(error); }
+    finally { removingOverlays = false; }
+  });
+}
+async function removeBatch(ids) {
+  let pending = ids;
+  for (let attempt = 0; pending.length; attempt++) {
+    try { await chrome.tabs.remove(pending); return; }
+    catch (error) {
+      // A concurrent close can invalidate one ID. Retry the surviving part of
+      // the same batch, never fall back to one awaited call for every tab.
+      const live = new Set((await chrome.tabs.query({})).map(tab => tab.id));
+      const remaining = pending.filter(id => live.has(id));
+      if (!remaining.length) return;
+      if (remaining.length === pending.length || attempt >= 2) throw error;
+      pending = remaining;
+    }
+  }
 }
 chrome.tabs.onActivated.addListener(({ tabId }) => { void touch(tabId); });
 chrome.windows.onFocusChanged.addListener(windowId => {
@@ -49,11 +100,13 @@ chrome.windows.onFocusChanged.addListener(windowId => {
 });
 chrome.tabs.onRemoved.addListener(id => {
   ready.then(() => { delete mru[id]; persistMRU(); });
-  chrome.storage.session.remove(`overlay:${id}`).catch(console.error);
+  removeOverlay(id);
   broadcast();
 });
 chrome.tabs.onCreated.addListener(broadcast);
-chrome.tabs.onUpdated.addListener(broadcast);
+chrome.tabs.onUpdated.addListener((_id, change) => {
+  if ('title' in change || 'url' in change) broadcast();
+});
 chrome.tabs.onMoved.addListener(broadcast);
 chrome.tabs.onAttached.addListener(broadcast);
 chrome.tabs.onDetached.addListener(broadcast);
@@ -72,9 +125,11 @@ async function openPicker(tab) {
     const mounted = await chrome.tabs.sendMessage(tab.id, { type: 'host:toggle' }, { frameId: 0 }).catch(() => null);
     if (mounted?.mounted) return;
     // Executing a command grants activeTab. No persistent host permissions.
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
     const token = crypto.randomUUID();
-    await chrome.storage.session.set({ [`overlay:${tab.id}`]: token });
+    await Promise.all([
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] }),
+      chrome.storage.session.set({ [`overlay:${tab.id}`]: token })
+    ]);
     await chrome.tabs.sendMessage(tab.id, { type: 'host:show', token }, { frameId: 0 });
   } catch {
     // Internal pages, store pages, PDF viewer, or an unavailable document.
@@ -121,11 +176,48 @@ chrome.runtime.onConnect.addListener(port => {
           port.postMessage({ type: 'error', text: 'Не удалось закрыть вкладку.' });
           broadcast();
         }
+      } else if (client && message.type === 'keep-tabs') {
+        bulkDepth++;
+        let completed = false;
+        try {
+          const { scopeIds, keepIds } = message;
+          if (!Array.isArray(scopeIds) || !Array.isArray(keepIds) || !keepIds.length || keepIds.length > 9 ||
+              !scopeIds.every(Number.isInteger) || !keepIds.every(Number.isInteger) ||
+              new Set(scopeIds).size !== scopeIds.length || new Set(keepIds).size !== keepIds.length ||
+              !keepIds.every(id => scopeIds.includes(id))) throw new Error('Invalid keep plan');
+          const live = await chrome.tabs.query({});
+          const survivors = keepIds.map(id => live.find(tab => tab.id === id)).filter(Boolean);
+          if (!survivors.length) throw new Error('Kept tabs were closed');
+          const keep = new Set(keepIds), scope = new Set(scopeIds);
+          const remove = live.filter(tab => scope.has(tab.id) && !keep.has(tab.id)).map(tab => tab.id);
+          if (remove.includes(client.tabId)) {
+            await hostMessage(client, 'host:prepare-switch', false);
+            await chrome.tabs.update(survivors[0].id, { active: true });
+            await chrome.windows.update(survivors[0].windowId, { focused: true });
+          }
+          // One browser request for the captured scope; new tabs are untouched.
+          await removeBatch(remove);
+          // One final snapshot serves both the initiating UI and other clients.
+          const tabs = clients.size ? await snapshot() : [];
+          clearTimeout(broadcastTimer); broadcastTimer = undefined;
+          broadcastRevision++;
+          publish(tabs, client);
+          completed = true;
+        } catch {
+          try { port.postMessage({ type: 'error', text: 'Не удалось закрыть остальные вкладки.' }); } catch { /* Source was closed. */ }
+        } finally {
+          bulkDepth--;
+          persistMRU();
+          removeOverlay();
+          if (!completed) broadcast();
+        }
       } else if (client && message.type === 'select' && Number.isInteger(message.id)) {
         try {
-          const target = await chrome.tabs.get(message.id);
-          // Hide and paint the source, retaining its iframe for the next use.
-          await hostMessage(client, 'host:prepare-switch', false);
+          // Fetch the destination while the source paints its hidden state.
+          const [target] = await Promise.all([
+            chrome.tabs.get(message.id),
+            hostMessage(client, 'host:prepare-switch', false)
+          ]);
           await chrome.tabs.update(target.id, { active: true });
           await chrome.windows.update(target.windowId, { focused: true });
           try { port.postMessage({ type: 'closed' }); } catch { /* Navigated source. */ }

@@ -129,6 +129,8 @@ try {
   assert.equal(await ui.locator('#query').inputValue(), '');
   assert.equal(await ui.locator('.domain').first().textContent(), '127.0.0.1');
   assert.ok(await ui.locator('.recency').filter({ hasText: '—' }).count() > 0);
+  await ui.evaluate(() => { globalThis.originalFirstRow = document.querySelector('.result'); });
+  assert.equal(await ui.locator('.title').first().evaluate(el => el.childNodes.length), 1, 'empty query uses one text node per title');
   const allColors = await ui.locator('.result').evaluateAll(rows => Object.fromEntries(rows.map(row => [row.dataset.id, row.style.getPropertyValue('--primary')])));
   const allIconFilters = await ui.locator('.result').evaluateAll(rows => Object.fromEntries(rows.map(row => [row.dataset.id, getComputedStyle(row.querySelector('img')).filter])));
   // All results stay reachable with a hidden scrollbar, through both keyboard
@@ -151,6 +153,14 @@ try {
   const panelTop = await ui.locator('#picker').evaluate(el => el.getBoundingClientRect().top);
   await ui.locator('#query').fill('tab-2');
   assert.ok(await ui.locator('mark').count() > 0);
+  assert.equal(await ui.locator('mark').first().evaluate(el => {
+    const [red, green, blue] = getComputedStyle(el).color.match(/[\d.]+/g).map(Number);
+    return red > green && green > blue && red > 140;
+  }), true, 'matched title characters use readable yellow');
+  await ui.locator('#query').fill('127');
+  assert.equal(await ui.locator('.domain mark').first().textContent(), '127', 'URL matches are highlighted in the visible hostname');
+  await ui.locator('#query').fill('tab-2');
+
   const initial = await ui.locator('[aria-selected="true"]').getAttribute('data-id');
   await home.keyboard.press('Control+n');
   assert.notEqual(await ui.locator('[aria-selected="true"]').getAttribute('data-id'), initial);
@@ -170,6 +180,7 @@ try {
   assert.equal(await ui.locator('.result').count(), 0);
   await home.keyboard.press('Control+Backspace');
   assert.equal(await ui.locator('#query').inputValue(), '');
+  assert.equal(await ui.evaluate(() => document.querySelector('.result') === globalThis.originalFirstRow), true, 'filtering reuses the original row and favicon');
   const stable = await ui.locator('[aria-selected="true"]').getAttribute('data-id');
   await worker.evaluate(async base => chrome.tabs.create({ url: `${base}/new-live`, active: false }), base);
   await ui.locator('.title', { hasText: 'new-live' }).waitFor();
@@ -327,9 +338,84 @@ try {
       console.log(`PASS public site: ${site} (${await home.title()})`);
     }
   }
+  // Bulk close is exercised only in this disposable profile, after all other
+  // scenarios. No command is ever sent to the user's browser/profile.
+  await home.goto(`${base}/home`);
+  await open();
+  const bulkUI = frame();
+  await worker.evaluate(() => {
+    const remove = chrome.tabs.remove.bind(chrome.tabs);
+    globalThis.bulkRemoveCalls = [];
+    chrome.tabs.remove = async ids => {
+      const call = { ids: Array.isArray(ids) ? [...ids] : ids };
+      globalThis.bulkRemoveCalls.push(call);
+      const start = performance.now();
+      try { return await remove(ids); }
+      finally { call.ms = performance.now() - start; }
+    };
+  });
+  const beforeBulk = await worker.evaluate(async () => (await chrome.tabs.query({})).map(tab => tab.id).sort((a, b) => a - b));
+  await systemKey('ALT', 'w');
+  assert.equal(await bulkUI.locator('#query').inputValue(), '');
+  await new Promise(resolve => setTimeout(resolve, 5100));
+  await home.keyboard.press('9');
+  assert.equal(await bulkUI.locator('#query').inputValue(), '9', 'a digit after five seconds is ordinary search input');
+  assert.deepEqual(await worker.evaluate(async () => (await chrome.tabs.query({})).map(tab => tab.id).sort((a, b) => a - b)), beforeBulk);
+  await bulkUI.locator('#query').fill('');
+  await systemKey('ALT', 'w');
+  await home.keyboard.press('Escape');
+  assert.equal(await home.locator(':popover-open').count(), 1, 'Escape cancels the pending command and keeps the picker open');
+  await home.keyboard.press('9');
+  assert.equal(await bulkUI.locator('#query').inputValue(), '9');
+  assert.deepEqual(await worker.evaluate(async () => (await chrome.tabs.query({})).map(tab => tab.id).sort((a, b) => a - b)), beforeBulk);
+  await bulkUI.locator('#query').fill('');
+  const keepNine = await bulkUI.locator('.result').evaluateAll(rows => rows.slice(0, 9).map(row => Number(row.dataset.id)));
+  assert.equal(keepNine.length, 9);
+  assert.ok(keepNine.includes(homeId));
+  async function waitForTabIds(ids) {
+    await worker.evaluate(async ids => {
+      const expected = JSON.stringify([...ids].sort((a, b) => a - b));
+      for (let attempt = 0; attempt < 160; attempt++) {
+        const actual = (await chrome.tabs.query({})).map(tab => tab.id).sort((a, b) => a - b);
+        if (JSON.stringify(actual) === expected) return;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error('Bulk close retained the wrong set of tabs');
+    }, ids);
+  }
+  await systemKey('ALT', 'w');
+  await home.keyboard.press('9');
+  await waitForTabIds(keepNine);
+  await bulkUI.waitForFunction(() => document.querySelectorAll('.result').length === 9);
+  const firstBatch = await worker.evaluate(() => globalThis.bulkRemoveCalls);
+  assert.equal(firstBatch.length, 1, 'bulk removal must issue one Chromium API request');
+  assert.equal(firstBatch[0].ids.length, beforeBulk.length - 9);
+  assert.equal(await bulkUI.locator('#query').inputValue(), '', 'the command digit must not enter the search');
+  assert.equal(await home.locator(':popover-open').count(), 1, 'retaining the host retains its picker');
+  await bulkUI.locator('#query').fill('Fixture /tab-');
+  const keepTwo = await bulkUI.locator('.result').evaluateAll(rows => rows.slice(0, 2).map(row => Number(row.dataset.id)));
+  assert.equal(keepTwo.length, 2);
+  assert.ok(!keepTwo.includes(homeId));
+  const sourceClosed = home.waitForEvent('close');
+  await systemKey('ALT', 'w');
+  await home.keyboard.press('2');
+  await waitForTabIds(keepTwo);
+  await sourceClosed;
+  assert.equal(home.isClosed(), true, 'all nonmatching tabs, including the source host, must close');
+  const survivor = context.pages().find(page => page.url().includes('/tab-'));
+  await assertPageClickable(survivor);
+  timings.bulkCalls = await worker.evaluate(async () => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (globalThis.bulkRemoveCalls.every(call => typeof call.ms === 'number')) return globalThis.bulkRemoveCalls;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error('Bulk remove did not finish');
+  });
+  assert.equal(timings.bulkCalls.length, 2, 'both bulk operations must each use one API call');
+  console.log('PASS: Alt+W timeout/cancel, digit input, exact MRU and filtered bulk keep, source tab closure');
   assert.deepEqual(errors, []);
   await writeFile(join(root, 'test-results/results.json'), JSON.stringify({ passed: true, nativeCtrlWReserved, timings, errors, tabCount: await worker.evaluate(async () => (await chrome.tabs.query({})).length) }, null, 2));
-  console.log('Open/close timings (ms):', JSON.stringify(timings));
+  console.log('Open/close timings (ms):', JSON.stringify({ ...timings, bulkCalls: timings.bulkCalls.map(call => ({ count: call.ids.length, ms: call.ms })) }));
   console.log('PASS: retained iframe, warm reopening, immediate close, 30+ tabs, windows, shortcut, iframe focus/isolation, fuzzy highlights, navigation, live updates/removal, Escape restoration, toggle, narrow viewport, activation, restricted-page popup, no extra windows/errors');
 } catch (error) {
   console.log('Fixture frame URLs:', context?.pages().flatMap(page => page.frames().map(frame => frame.url())));

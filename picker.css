@@ -15,7 +15,7 @@ input { display: block; width: 100%; min-width: 0; padding: 0; border: 0; border
 .title { color: var(--primary); font-size: 17px; font-weight: 450; }
 .domain { color: var(--secondary); font-size: 12px; margin-top: 2px; }
 .recency { flex-shrink: 0; color: var(--secondary); font-size: 11px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
-mark { color: inherit; background: transparent; font-weight: 750; }
+mark { color: rgb(calc(242 * var(--recency, 1)), calc(204 * var(--recency, 1)), calc(96 * var(--recency, 1))); background: transparent; font-weight: 750; }
 #status { flex-shrink: 0; padding: 20px; margin: 0; color: #aaa; }
 #status:empty { display: none; }
 body.popup { width: 760px; height: auto; max-height: 600px; padding: 0; background: #181818; }

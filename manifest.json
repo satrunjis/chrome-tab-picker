@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chromium Tab Picker",
-  "version": "0.3.1",
+  "version": "0.4.4",
   "description": "Local fuzzy tab picker: an overlay, never a new browser window.",
   "minimum_chrome_version": "127",
   "permissions": [
